@@ -1,14 +1,11 @@
 from fastapi import FastAPI, Depends, status
-from typing import List
 from sqlalchemy.orm import Session
-from sqlmodel import Field, Session, SQLModel, create_engine, select, Sequence
+from sqlmodel import Field, Session, SQLModel, create_engine
 from sqlalchemy import (Boolean, Column, ForeignKey, Integer, String, Date)
-from datetime import date as d
-from typing import Optional
+from typing import List
 
 
 class Todo(SQLModel, table=True):
-    # id: Optional[int] = Field(default=None, primary_key=True)
     content: str = Field(index=True)
 
 class Projects(Todo):
