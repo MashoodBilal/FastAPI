@@ -1,120 +1,128 @@
-from fastapi import FastAPI, HTTPException, Query
-from sqlmodel import Field, Session, SQLModel, create_engine, select
+from fastapi import FastAPI, Depends, status
+from typing import List
+from sqlalchemy.orm import Session
+from sqlmodel import Field, Session, SQLModel, create_engine, select, Sequence
+from sqlalchemy import (Boolean, Column, ForeignKey, Integer, String, Date)
+from datetime import date as d
+from typing import Optional
 
 
-from contextlib import asynccontextmanager
+class Todo(SQLModel, table=True):
+    # id: Optional[int] = Field(default=None, primary_key=True)
+    content: str = Field(index=True)
+
+class Projects(Todo):
+        __tablename__ = 'projects'
+
+        id = Column(Integer, primary_key=True, index=True)
+        name = Column(String)
 
 
+class Tasks(Todo):
+        __tablename__ = 'tasks'
 
-class HeroBase(SQLModel):
-    name: str = Field(index=True)
-    secret_name: str
-    age: int | None = Field(default=None, index=True)
+        id = Column(Integer, primary_key=True, index=True)
+        project = Column(String, ForeignKey("projects.id"))
+        name = Column(String)
+        date = Column(Date)
+        priority = Column(Boolean)
+        completed = Column(Boolean)
 
+        def __repr__(self):
+            return f"Tasks('{self.name}', '{self.date}')"
 
-class Hero(HeroBase, table=True):
-    id: int | None = Field(default=None, primary_key=True)
+connection_string = str(
+    "postgresql://postgres:password@localhost:5432/todoapp"
+).replace(
+    "postgresql", "postgresql+psycopg"
+)
 
+engine = create_engine(connection_string, connect_args={}, pool_recycle=300)
 
-
-class HeroCreate(Hero, table=True):
-    name: str = Field(index=True)
-    secret_name: str
-    age: int | None = Field(default=None, index=True)
-
-class HeroUpdate(HeroCreate, table=True):
-    pass
-
-
-class HeroRead(Hero, table=True):
-    id: int
-    name: str = Field(index=True)
-    secret_name: str
-    age: int | None = Field(default=None, index=True)
-
-
-sqlite_file_name = "database.db"
-sqlite_url = f"sqlite:///{sqlite_file_name}"
-
-connect_args = {"check_same_thread": False}
-engine = create_engine(sqlite_url, echo=True, connect_args=connect_args)
-
-
-def create_db_and_tables():
-    SQLModel.metadata.create_all(engine)
-
+SQLModel.metadata.create_all(engine)
 
 
 
+def get_db():
+        try:
+            db = Session(engine)
+            yield db
+        finally:
+            db.close()
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    create_db_and_tables()
-    yield
+app = FastAPI()
 
-app = FastAPI(lifespan=lifespan)
+@app.on_event("shutdown")
+async def shutdown_db():
+    await engine.dispose()
 
+    #GET /projects (list):
+    @app.get("/projects", response_model=List[Projects])
+    def list_projects(db: Session = Depends(get_db)):
+        return db.query(Projects).all()
 
+    #POST /projects (create):
+    @app.post("/projects", status_code=status.HTTP_201_CREATED)
+    def create_project(data: Projects, db: Session = Depends(get_db)):
+        project = db.query(Projects).filter(Projects.name == data.name)
+        if project.first() is None:
+            db.add(data)
+            db.commit()
+            return "Project Created"
+        else:
+            return "Project already exists"
 
+#### GET/POST tasks:
+    #GET /tasks (list):
+    @app.get("/tasks", response_model=List[Tasks])
+    def list_tasks(db: Session = Depends(get_db)):
+        return db.query(Tasks).all()
 
-@app.put("/heroes/")
-def create_hero(hero: HeroCreate):
-    with Session(engine) as session:
-        session.add(hero)
-        session.commit()
-        session.refresh(hero)
-        return hero
+    #POST /tasks (create):
+    @app.post("/tasks")
+    def create_task(data: Tasks, db: Session = Depends(get_db)):
+        project = db.query(Projects).filter(Projects.name == data.project)
+        if project.first() is None:
+            return "Project does not exist"
+        else:
+            db.add(data)
+            db.commit()
+            return "Task Created"
 
+#### GET/PUT/DELETE tasks:
+    #GET /tasks (list):
+    @app.get("/tasks/{name}")
+    def get_task(name: str, db: Session = Depends(get_db)):
+        return db.query(Tasks).filter(Tasks.project == name)
 
-@app.post("/heroes/")
-def process_hero(hero: HeroCreate):
-    with Session(engine) as session:
-        session.add(hero)
-        session.commit()
-        session.refresh(hero)
-        return hero
+    #PUT /tasks (edit):
+    @app.put("/tasks/{name}")
+    def put_task(name: str, data: Tasks, db: Session = Depends(get_db)):
+        if db.query(Projects).filter(Projects.name == name).first() is None:
+            return "Project does not exist"
+        else:
+            project = db.query(Tasks).filter(Tasks.project == name)
+            if project.first() is None:
+                db.add(data)
+                db.commit()
+                return "Task Created"
+            else:
+                for task in project:
+                    db.delete(task)
+                    db.add(data)
+                db.commit()
+                return "Task Updated"
 
-
-@app.get("/heroes/", response_model=list[HeroRead])
-def read_heroes(offset: int = 0, limit: int = Query(default=50, le=50)):
-    with Session(engine) as session:
-        heroes = session.exec(select(Hero).offset(offset).limit(limit)).all()
-        return heroes
-
-
-
-@app.get("/heroes/{hero_id}", response_model=HeroRead)
-def read_hero(hero_id: int):
-    with Session(engine) as session:
-        hero = session.get(Hero, hero_id)
-        if not hero:
-            raise HTTPException(status_code=404, detail="Hero not found")
-        return hero
-
-
-@app.delete("/heroes/{hero_id}")
-def delete_hero(hero_id: int):
-    with Session(engine) as session:
-        hero = session.get(Hero, hero_id)
-        if not hero:
-            raise HTTPException(status_code=404, detail="Hero not found")
-        session.delete(hero)
-        session.commit()
-        return {"ok": True}
-
-
-
-@app.patch("/heroes/{hero_id}", response_model=HeroRead)
-def update_hero(hero_id: int, hero: HeroUpdate):
-    with Session(engine) as session:
-        db_hero = session.get(Hero, hero_id)
-        if not db_hero:
-            raise HTTPException(status_code=404, detail="Hero not found")
-        hero_data = hero.model_dump(exclude_unset=True)
-        db_hero.sqlmodel_update(hero_data)
-        session.add(db_hero)
-        session.commit()
-        session.refresh(db_hero)
-        return db_hero
-
-
+    #DELETE /tasks (delete):
+    @app.delete("/tasks/{name}/{id}")
+    def delete_task(name: str, id: int, db: Session = Depends(get_db)):
+        if db.query(Projects).filter(Projects.name == name).first() is None:
+            return "Project does not exist"
+        else:
+            project = db.query(Tasks).filter(Tasks.project == name)
+            for task in project:
+                if task.id == id:
+                    db.delete(task)
+                    db.commit()
+                    return "Task Deleted"
+            return "Task does not exist"
